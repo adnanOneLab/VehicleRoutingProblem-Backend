@@ -7,6 +7,7 @@ import json
 import uuid
 import requests
 from .vrp_solver import solve_vrp_problem
+from .pdp_solver import solve_pdp_problem
 from .models import VRPConfiguration, VRPSolution
 from .serializers import VRPConfigSerializer, VRPSolutionSerializer
 
@@ -250,6 +251,111 @@ def validate_vrp(request):
     except Exception as e:
         return Response(
             {'error': str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+def solve_pdp(request):
+    """
+    Solve Pickup and Delivery Problem (PDP) with transfer requests
+    Expected data format:
+    {
+        'locations': [{'id': 0, 'name': 'Hotel A', 'lat': ..., 'lng': ...}, ...],
+        'vehicles': [
+            {'id': 0, 'capacity': 10, 'start_location': 2, 'start_time': 480},
+            ...
+        ],
+        'transfer_requests': [
+            {
+                'id': 0,
+                'pickup_location': 1,
+                'delivery_location': 2,
+                'passengers': 4,
+                'arrival_time_at_pickup': 600,
+                'pickup_time_window': [600, 720],
+                'delivery_time_window': [720, 900]  # optional
+            },
+            ...
+        ],
+        'distance_matrix': [[...], ...],  # Optional, will be calculated if not provided
+        'time_matrix': [[...], ...]  # Optional
+    }
+    """
+    try:
+        pdp_data = request.data
+        
+        # Validate required fields
+        required_fields = ['locations', 'vehicles', 'transfer_requests']
+        for field in required_fields:
+            if field not in pdp_data:
+                return Response(
+                    {'error': f'Missing required field: {field}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        # If distance_matrix not provided, calculate from locations
+        if 'distance_matrix' not in pdp_data or not pdp_data['distance_matrix']:
+            # Calculate using Haversine formula
+            from math import sin, cos, atan2, sqrt, radians
+            locations = pdp_data['locations']
+            num_locations = len(locations)
+            distance_matrix = []
+            
+            for i in range(num_locations):
+                row = []
+                for j in range(num_locations):
+                    if i == j:
+                        row.append(0)
+                    else:
+                        lat1, lng1 = locations[i]['lat'], locations[i]['lng']
+                        lat2, lng2 = locations[j]['lat'], locations[j]['lng']
+                        R = 6371  # Earth's radius in km
+                        dlat = radians(lat2 - lat1)
+                        dlng = radians(lng2 - lng1)
+                        a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng/2)**2
+                        c = 2 * atan2(sqrt(a), sqrt(1-a))
+                        distance = round(R * c)
+                        row.append(distance)
+                distance_matrix.append(row)
+            
+            pdp_data['distance_matrix'] = distance_matrix
+        
+        # Solve the PDP problem
+        solution = solve_pdp_problem(pdp_data)
+        
+        if solution is None:
+            return Response(
+                {'error': 'No solution found. Check time windows, capacities, and transfer request constraints.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Generate solution ID
+        solution_id = str(uuid.uuid4())
+        
+        # Cache the solution
+        try:
+            cache.set(f'pdp_solution_{solution_id}', solution, 3600)
+        except Exception:
+            pass
+        
+        # Optionally save to database
+        if request.data.get('save_solution', False):
+            VRPSolution.objects.create(
+                solution_id=solution_id,
+                input_data=pdp_data,
+                solution_data=solution
+            )
+        
+        return Response({
+            'solution_id': solution_id,
+            'solution': solution,
+            'status': 'success'
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response(
+            {'error': str(e), 'details': 'Internal server error'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 

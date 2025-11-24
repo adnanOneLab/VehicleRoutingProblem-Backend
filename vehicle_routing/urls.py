@@ -3,6 +3,7 @@ from . import views
 
 urlpatterns = [
     path('solve', views.solve_vrp, name='solve_vrp'),
+    path('solve-pdp', views.solve_pdp, name='solve_pdp'),  # New PDP endpoint
     path('solution/<str:solution_id>', views.get_vrp_solution, name='get_vrp_solution'),
     path('config', views.save_vrp_config, name='save_vrp_config'),
     path('configs', views.get_vrp_configs, name='get_vrp_configs'),
