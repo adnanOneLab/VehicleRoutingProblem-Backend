@@ -2,7 +2,15 @@
 
 ## Overview
 
-This implementation supports a **Pickup and Delivery Problem (PDP)** with the following features:
+This implementation supports a **Pickup and Delivery Problem (PDP)** by converting transfer requests into VRP format and using the existing VRP solver.
+
+**Key Insight**: We don't need a separate PDP solver. Instead, we:
+1. Convert transfer requests into nodes, demands, and time windows
+2. Use the existing VRP solver with enhanced support for:
+   - Multiple depots (vehicles can start at any location)
+   - Pickup-delivery constraints (pickup must come before delivery)
+
+## Features
 
 1. **Multiple Depots**: Any location can be a starting point for vehicles
 2. **Transfer Requests**: Define passenger transfers from source to destination
@@ -36,12 +44,23 @@ This implementation supports a **Pickup and Delivery Problem (PDP)** with the fo
 
 ## How It Works
 
-1. **Pickup and Delivery Nodes**: Each transfer request creates 2 nodes:
-   - Pickup node at source location
-   - Delivery node at destination location
+1. **Input Conversion** (`request_converter.py`):
+   - Takes transfer requests as input
+   - Creates pickup and delivery nodes for each request
+   - Builds extended distance/time matrices
+   - Sets demands: +passengers at pickup, -passengers at delivery
+   - Sets time windows to ensure pickup before delivery
+   - Converts to VRP format
 
-2. **Constraints**:
-   - Pickup must happen before delivery (same vehicle)
+2. **VRP Solver** (enhanced `vrp_solver.py`):
+   - Supports multiple depots via `vehicle_starts` parameter
+   - Supports pickup-delivery pairs via `AddPickupAndDelivery`
+   - Uses time callback (not distance) for time windows
+   - Handles different vehicle capacities
+
+3. **Constraints**:
+   - Pickup must happen before delivery (enforced by `AddPickupAndDelivery`)
+   - Same vehicle handles pickup and delivery (enforced by constraint)
    - Vehicle capacity cannot be exceeded
    - Time windows must be respected
    - Vehicles start at their designated locations

@@ -3,15 +3,41 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 def solve_vrp_problem(data):
     """
     Solve VRP problem using OR-Tools
+    Supports:
+    - Multiple depots (if vehicle_starts provided)
+    - Pickup and delivery constraints (if pickup_delivery_pairs provided)
+    
     Returns solution dictionary or None if no solution found
     """
     try:
-        # Create the routing index manager
-        manager = pywrapcp.RoutingIndexManager(
-            len(data['distance_matrix']),
-            data['num_vehicles'],
-            data['depot']
-        )
+        num_nodes = len(data['distance_matrix'])
+        num_vehicles = data['num_vehicles']
+        
+        # Support multiple depots: if vehicle_starts provided, use it
+        # Otherwise, use single depot
+        if 'vehicle_starts' in data and data['vehicle_starts']:
+            vehicle_starts = data['vehicle_starts']
+            vehicle_ends = data.get('vehicle_ends', vehicle_starts)  # Default to same as starts
+            # Ensure we have starts/ends for all vehicles
+            while len(vehicle_starts) < num_vehicles:
+                vehicle_starts.append(data.get('depot', 0))
+            while len(vehicle_ends) < num_vehicles:
+                vehicle_ends.append(vehicle_starts[len(vehicle_ends)] if len(vehicle_ends) < len(vehicle_starts) else data.get('depot', 0))
+            
+            manager = pywrapcp.RoutingIndexManager(
+                num_nodes,
+                num_vehicles,
+                vehicle_starts,
+                vehicle_ends
+            )
+        else:
+            # Single depot (original behavior)
+            depot = data.get('depot', 0)
+            manager = pywrapcp.RoutingIndexManager(
+                num_nodes,
+                num_vehicles,
+                depot
+            )
         
         # Create Routing Model
         routing = pywrapcp.RoutingModel(manager)
@@ -46,20 +72,65 @@ def solve_vrp_problem(data):
         max_time_window = max([tw[1] for tw in data['time_windows']], default=1440)  # Default to 24 hours
         max_route_time = max_time_window + 120  # Add 2 hours buffer for travel
         
-        # Add time dimension (in minutes)
+        # Create time callback (convert distance to time if time_matrix not provided)
+        def time_callback(from_index, to_index):
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            
+            # Use time_matrix if provided
+            if 'time_matrix' in data and data['time_matrix']:
+                return data['time_matrix'][from_node][to_node]
+            
+            # Otherwise, convert distance to time (assume 50 km/h = 0.833 km/min)
+            distance_km = data['distance_matrix'][from_node][to_node]
+            time_minutes = int(distance_km / 0.833) if distance_km > 0 else 0
+            
+            # Add service time (5 minutes at each stop)
+            service_time = data.get('service_times', [5] * len(data['distance_matrix']))
+            if from_node < len(service_time):
+                time_minutes += service_time[from_node] if isinstance(service_time, list) else service_time
+            
+            return time_minutes
+        
+        time_callback_index = routing.RegisterTransitCallback(time_callback)
+        
+        # Add time dimension (in minutes) - NOW USES TIME, NOT DISTANCE
         routing.AddDimension(
-            transit_callback_index,
+            time_callback_index,  # Use time callback, not distance
             30,  # allow waiting time (30 minutes max wait at location)
             max_route_time,  # maximum time per vehicle route (in minutes)
             False,  # Don't force start cumul to zero
             'Time'
         )
         
+        # Add pickup and delivery constraints if provided
+        if 'pickup_delivery_pairs' in data and data['pickup_delivery_pairs']:
+            for pickup_node, delivery_node in data['pickup_delivery_pairs']:
+                pickup_index = manager.NodeToIndex(pickup_node)
+                delivery_index = manager.NodeToIndex(delivery_node)
+                routing.AddPickupAndDelivery(pickup_index, delivery_index)
+                # Same vehicle must handle both pickup and delivery
+                routing.solver().Add(
+                    routing.VehicleVar(pickup_index) == routing.VehicleVar(delivery_index)
+                )
+        
         # Add time window constraints
         time_dimension = routing.GetDimensionOrDie('Time')
+        
+        # Handle vehicle start times if provided
+        vehicle_start_times = data.get('vehicle_start_times', [0] * num_vehicles)
+        for vehicle_id in range(num_vehicles):
+            start_index = routing.Start(vehicle_id)
+            start_time = vehicle_start_times[vehicle_id] if vehicle_id < len(vehicle_start_times) else 0
+            time_dimension.CumulVar(start_index).SetRange(start_time, max_route_time)
+        
         for location_idx, time_window in enumerate(data['time_windows']):
-            if location_idx == data['depot']:
-                # Depot can be visited anytime, but let's set reasonable bounds
+            # Skip if this is a depot and we're using multiple depots
+            if 'vehicle_starts' in data and data['vehicle_starts']:
+                # In multi-depot mode, don't skip any nodes
+                pass
+            elif location_idx == data.get('depot', 0):
+                # Single depot mode: depot can be visited anytime
                 index = manager.NodeToIndex(location_idx)
                 time_dimension.CumulVar(index).SetRange(0, max_route_time)
                 continue

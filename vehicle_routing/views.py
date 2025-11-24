@@ -7,7 +7,7 @@ import json
 import uuid
 import requests
 from .vrp_solver import solve_vrp_problem
-from .pdp_solver import solve_pdp_problem
+from .request_converter import convert_transfer_requests_to_vrp_format
 from .models import VRPConfiguration, VRPSolution
 from .serializers import VRPConfigSerializer, VRPSolutionSerializer
 
@@ -259,6 +259,8 @@ def validate_vrp(request):
 def solve_pdp(request):
     """
     Solve Pickup and Delivery Problem (PDP) with transfer requests
+    Converts transfer requests to VRP format and uses existing VRP solver
+    
     Expected data format:
     {
         'locations': [{'id': 0, 'name': 'Hotel A', 'lat': ..., 'lng': ...}, ...],
@@ -269,12 +271,12 @@ def solve_pdp(request):
         'transfer_requests': [
             {
                 'id': 0,
-                'pickup_location': 1,
-                'delivery_location': 2,
-                'passengers': 4,
-                'arrival_time_at_pickup': 600,
-                'pickup_time_window': [600, 720],
-                'delivery_time_window': [720, 900]  # optional
+                'pickup_location': 1,  # Source location index
+                'delivery_location': 2,  # Destination location index
+                'passengers': 4,  # Number of people
+                'arrival_time_at_pickup': 600,  # When passengers arrive (minutes from midnight)
+                'pickup_time_window': [600, 720],  # Optional: [start, end]
+                'delivery_time_window': [720, 900]  # Optional: [start, end]
             },
             ...
         ],
@@ -321,8 +323,11 @@ def solve_pdp(request):
             
             pdp_data['distance_matrix'] = distance_matrix
         
-        # Solve the PDP problem
-        solution = solve_pdp_problem(pdp_data)
+        # Convert transfer requests to VRP format
+        vrp_data = convert_transfer_requests_to_vrp_format(pdp_data)
+        
+        # Solve using existing VRP solver
+        solution = solve_vrp_problem(vrp_data)
         
         if solution is None:
             return Response(
